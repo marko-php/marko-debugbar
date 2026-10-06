@@ -6,12 +6,14 @@ use Marko\Config\Env;
 
 return [
     'enabled' => Env::bool('DEBUGBAR_ENABLED', Env::bool('APP_DEBUG', false)),
+    'allow_production' => Env::bool('DEBUGBAR_ALLOW_PRODUCTION', false),
     'inject' => Env::bool('DEBUGBAR_INJECT', true),
     'capture_cli' => Env::bool('DEBUGBAR_CAPTURE_CLI', false),
     'theme' => Env::string('DEBUGBAR_THEME', 'auto'),
     'route' => [
         'open' => Env::bool('DEBUGBAR_ROUTE_OPEN', false),
         'allowed_ips' => ['127.0.0.1', '::1'],
+        'trusted_proxies' => [],
     ],
     'storage' => [
         'enabled' => Env::bool('DEBUGBAR_STORAGE_ENABLED', true),

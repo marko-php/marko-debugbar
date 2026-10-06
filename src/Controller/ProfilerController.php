@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\Debugbar\Controller;
 
 use Marko\Config\ConfigRepositoryInterface;
+use Marko\Debugbar\Access\AccessGate;
 use Marko\Debugbar\Rendering\ProfilerPageRenderer;
 use Marko\Debugbar\Storage\DebugbarStorage;
 use Marko\Routing\Attributes\Delete;
@@ -14,11 +15,16 @@ use Marko\Routing\Http\Response;
 
 class ProfilerController
 {
+    private readonly AccessGate $access;
+
     public function __construct(
-        private readonly ConfigRepositoryInterface $config,
+        ConfigRepositoryInterface $config,
         private readonly DebugbarStorage $storage,
         private readonly ProfilerPageRenderer $renderer = new ProfilerPageRenderer(),
-    ) {}
+        ?AccessGate $access = null,
+    ) {
+        $this->access = $access ?? new AccessGate($config);
+    }
 
     #[Get('/_debugbar')]
     public function index(Request $request): Response
@@ -78,72 +84,17 @@ class ProfilerController
         ]);
     }
 
+    /**
+     * Profiler routes refuse in production (unless explicitly allowed) and for any
+     * client outside the allowlist, including requests relayed by an untrusted proxy.
+     */
     private function allowed(): bool
     {
-        if (! $this->configBool('debugbar.enabled', false)) {
-            return false;
-        }
-
-        if ($this->configBool('debugbar.route.open', false)) {
-            return true;
-        }
-
-        $allowed = $this->configArray('debugbar.route.allowed_ips', ['127.0.0.1', '::1']);
-        $remoteAddress = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
-
-        if (! is_scalar($remoteAddress)) {
-            return false;
-        }
-
-        return in_array((string) $remoteAddress, array_map('strval', $allowed), true);
+        return $this->access->enabled() && $this->access->clientAllowed($_SERVER);
     }
 
     private function notFound(): Response
     {
         return new Response('Not Found', 404, ['Content-Type' => 'text/plain; charset=utf-8']);
-    }
-
-    private function configBool(
-        string $key,
-        bool $default,
-    ): bool {
-        if (! $this->config->has($key)) {
-            return $default;
-        }
-
-        $value = $this->config->get($key);
-
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        if (is_scalar($value)) {
-            $normalized = filter_var($value, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
-
-            return $normalized ?? (bool) $value;
-        }
-
-        return $default;
-    }
-
-    /**
-     * @param list<string> $default
-     * @return list<string>
-     */
-    private function configArray(
-        string $key,
-        array $default,
-    ): array {
-        if (! $this->config->has($key)) {
-            return $default;
-        }
-
-        $value = $this->config->get($key);
-
-        if (! is_array($value)) {
-            return $default;
-        }
-
-        return array_values(array_map('strval', array_filter($value, 'is_scalar')));
     }
 }

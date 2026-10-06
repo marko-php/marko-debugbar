@@ -10,7 +10,7 @@ composer require marko/debugbar --dev
 
 ## Quick Example
 
-With `APP_DEBUG=true` (or `DEBUGBAR_ENABLED=true`), the debugbar auto-injects into HTML responses and stores a snapshot for every request. Add custom messages and timings from anywhere in your app:
+With `APP_DEBUG=true` (or `DEBUGBAR_ENABLED=true`) in a non-production environment, the debugbar auto-injects into HTML responses and stores a snapshot for every request. Add custom messages and timings from anywhere in your app:
 
 ```php
 debugbar('Rendering dashboard', 'info', ['user_id' => $user->id]);

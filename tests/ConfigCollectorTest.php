@@ -3,7 +3,9 @@
 declare(strict_types=1);
 
 use Marko\Config\ConfigRepository;
+use Marko\Core\Environment\AppEnvironment;
 use Marko\Core\Path\ProjectPaths;
+use Marko\Debugbar\Access\AccessGate;
 use Marko\Debugbar\Debugbar;
 use Marko\Debugbar\Storage\DebugbarStorage;
 
@@ -67,7 +69,11 @@ function makeDebugbarWithConfig(array $appConfig): Debugbar
     $repository = new ConfigRepository($config);
     $storage = new DebugbarStorage($repository, new ProjectPaths($basePath));
 
-    return new Debugbar($repository, $storage);
+    return new Debugbar(
+        $repository,
+        $storage,
+        access: new AccessGate($repository, new AppEnvironment(['APP_ENV' => 'local'])),
+    );
 }
 
 it('masks a top-level password config key', function (): void {

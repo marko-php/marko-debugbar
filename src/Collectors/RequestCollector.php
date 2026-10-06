@@ -5,9 +5,14 @@ declare(strict_types=1);
 namespace Marko\Debugbar\Collectors;
 
 use Marko\Debugbar\Debugbar;
+use Marko\Debugbar\Support\Redactor;
 
 class RequestCollector implements CollectorInterface
 {
+    public function __construct(
+        private readonly Redactor $redactor = new Redactor(),
+    ) {}
+
     public function name(): string
     {
         return 'request';
@@ -16,15 +21,15 @@ class RequestCollector implements CollectorInterface
     public function collect(Debugbar $debugbar): array
     {
         $method = $this->stringValue($_SERVER['REQUEST_METHOD'] ?? null, 'CLI');
-        $uri = $this->stringValue($_SERVER['REQUEST_URI'] ?? null, '/');
+        $uri = $this->redactor->uri($this->stringValue($_SERVER['REQUEST_URI'] ?? null, '/'));
 
         return [
             'label' => 'Request',
             'badge' => $method,
             'method' => $method,
             'uri' => $uri,
-            'query' => $_GET,
-            'post' => $this->redact($_POST),
+            'query' => $this->redactor->redact($_GET),
+            'post' => $this->redactor->redact($_POST),
             'headers' => $this->headers(),
         ];
     }
@@ -43,44 +48,10 @@ class RequestCollector implements CollectorInterface
 
             $header = str_replace('_', '-', substr($key, 5));
             $header = ucwords(strtolower($header), '-');
-            $headers[$header] = $this->isSensitiveKey($header) ? '[masked]' : $this->stringValue($value, '');
+            $headers[$header] = $this->redactor->header($header, $this->stringValue($value, ''));
         }
 
         return $headers;
-    }
-
-    /**
-     * @param array<mixed> $values
-     * @return array<mixed>
-     */
-    private function redact(array $values): array
-    {
-        foreach ($values as $key => $value) {
-            $keyString = strtolower((string) $key);
-
-            if ($this->isSensitiveKey($keyString)) {
-                $values[$key] = '[masked]';
-                continue;
-            }
-
-            if (is_array($value)) {
-                $values[$key] = $this->redact($value);
-            }
-        }
-
-        return $values;
-    }
-
-    private function isSensitiveKey(string $key): bool
-    {
-        $key = strtolower($key);
-
-        return str_contains($key, 'authorization')
-            || str_contains($key, 'password')
-            || str_contains($key, 'token')
-            || str_contains($key, 'secret')
-            || str_contains($key, 'api-key')
-            || str_contains($key, 'api_key');
     }
 
     private function stringValue(

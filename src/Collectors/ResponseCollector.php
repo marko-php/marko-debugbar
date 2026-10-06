@@ -4,14 +4,23 @@ declare(strict_types=1);
 
 namespace Marko\Debugbar\Collectors;
 
+use Marko\Debugbar\Support\Redactor;
+
 class ResponseCollector
 {
+    public function __construct(
+        private readonly Redactor $redactor = new Redactor(),
+    ) {}
+
     /**
+     * @param list<string>|null $headers Raw header lines; defaults to headers_list()
      * @return array<string, mixed>
      */
-    public function collect(string $body): array
-    {
-        $headers = headers_list();
+    public function collect(
+        string $body,
+        ?array $headers = null,
+    ): array {
+        $headers = array_map($this->redactor->headerLine(...), $headers ?? headers_list());
         $statusCode = http_response_code();
 
         return [

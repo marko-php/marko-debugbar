@@ -7,6 +7,7 @@ namespace Marko\Debugbar\Storage;
 use JsonException;
 use Marko\Config\ConfigRepositoryInterface;
 use Marko\Core\Path\ProjectPaths;
+use Marko\Debugbar\Exceptions\DebugbarStorageException;
 
 class DebugbarStorage
 {
@@ -18,7 +19,7 @@ class DebugbarStorage
     /**
      * @param array<string, mixed> $dataset
      *
-     * @throws JsonException
+     * @throws JsonException|DebugbarStorageException
      */
     public function put(array $dataset): void
     {
@@ -31,13 +32,16 @@ class DebugbarStorage
         $directory = $this->directory();
 
         if (! is_dir($directory)) {
-            mkdir($directory, 0775, true);
+            if (! $this->privately(static fn (): bool => mkdir($directory, 0700, true)) && ! is_dir($directory)) {
+                throw DebugbarStorageException::directoryNotCreatable($directory);
+            }
+
+            chmod($directory, 0700);
         }
 
-        file_put_contents(
+        $this->write(
             $directory.'/'.$id.'.json',
             json_encode($dataset, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
-            LOCK_EX,
         );
 
         $summary = is_array($dataset['summary'] ?? null)
@@ -52,7 +56,7 @@ class DebugbarStorage
             ? $dataset['profiler_url']
             : '/_debugbar/'.$id;
 
-        file_put_contents(
+        $this->write(
             $directory.'/'.$id.'.summary.json',
             json_encode(
                 [
@@ -63,7 +67,6 @@ class DebugbarStorage
                 ],
                 JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
             ),
-            LOCK_EX,
         );
 
         $this->prune();
@@ -181,6 +184,37 @@ class DebugbarStorage
         }
 
         return rtrim($this->paths->base, '/').'/'.trim($path, '/');
+    }
+
+    /**
+     * Profiles hold request headers, queries and logs, so they are readable by the owner only.
+     *
+     * @throws DebugbarStorageException
+     */
+    private function write(
+        string $file,
+        string $contents,
+    ): void {
+        if ($this->privately(static fn (): int|false => file_put_contents($file, $contents, LOCK_EX)) === false) {
+            throw DebugbarStorageException::fileNotWritable($file);
+        }
+
+        chmod($file, 0600);
+    }
+
+    /**
+     * Run a filesystem call under a 0077 umask so new files and directories are never
+     * briefly group- or world-readable before their mode is tightened.
+     */
+    private function privately(callable $operation): mixed
+    {
+        $previous = umask(0077);
+
+        try {
+            return $operation();
+        } finally {
+            umask($previous);
+        }
     }
 
     private function prune(): void

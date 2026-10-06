@@ -3,7 +3,11 @@
 declare(strict_types=1);
 
 use Marko\Config\ConfigRepository;
+use Marko\Config\ConfigRepositoryInterface;
+use Marko\Core\Environment\AppEnvironment;
 use Marko\Core\Path\ProjectPaths;
+use Marko\Debugbar\Access\AccessGate;
+use Marko\Debugbar\Collectors\ResponseCollector;
 use Marko\Debugbar\Controller\ProfilerController;
 use Marko\Debugbar\Debugbar;
 use Marko\Debugbar\Plugins\DatabaseConnectionPlugin;
@@ -85,7 +89,23 @@ function makeDebugbar(array $overrides = [], ?DebugbarStorage &$storage = null):
     $repository = new ConfigRepository($config);
     $storage = new DebugbarStorage($repository, new ProjectPaths($basePath));
 
-    return new Debugbar($repository, $storage);
+    return new Debugbar(
+        $repository,
+        $storage,
+        access: new AccessGate($repository, new AppEnvironment(['APP_ENV' => 'local'])),
+    );
+}
+
+function makeProfilerController(
+    ConfigRepositoryInterface $config,
+    DebugbarStorage $storage,
+    string $environment = 'local',
+): ProfilerController {
+    return new ProfilerController(
+        $config,
+        $storage,
+        access: new AccessGate($config, new AppEnvironment(['APP_ENV' => $environment])),
+    );
 }
 
 test('debugbar injects itself before the closing body tag', function (): void {
@@ -258,7 +278,7 @@ test('profiler controller renders stored requests and json snapshots', function 
 
     expect($storage)->toBeInstanceOf(DebugbarStorage::class);
 
-    $controller = new ProfilerController($debugbar->config(), $storage);
+    $controller = makeProfilerController($debugbar->config(), $storage);
     $request = new Request();
 
     $index = $controller->index($request);
@@ -320,4 +340,137 @@ test('boot starts capture in cli only when configured', function (): void {
     $debugbar->boot();
 
     expect($debugbar->isCapturing())->toBeFalse();
+});
+
+test('debugbar masks cookie values in the toolbar html and the stored profile', function (): void {
+    $_SERVER['HTTP_COOKIE'] = 'marko_session=sess-abc123; remember_me=remember-xyz';
+
+    $storage = null;
+    $debugbar = makeDebugbar([], $storage);
+    $injected = $debugbar->inject('<html><body>Page</body></html>');
+    $stored = $storage?->get($debugbar->id());
+
+    expect($stored['collectors']['request']['headers']['Cookie'])
+        ->toBe('marko_session=[masked]; remember_me=[masked]')
+        ->and($injected)->not->toContain('sess-abc123')
+        ->and($injected)->not->toContain('remember-xyz')
+        ->and(json_encode($stored, JSON_THROW_ON_ERROR))->not->toContain('sess-abc123');
+});
+
+test('response collector masks set-cookie values', function (): void {
+    $collected = (new ResponseCollector())->collect('<html></html>', [
+        'Content-Type: text/html',
+        'Set-Cookie: marko_session=new-session-id; Path=/; HttpOnly',
+    ]);
+
+    expect($collected['headers'])->toBe([
+        'Content-Type: text/html',
+        'Set-Cookie: marko_session=[masked]; Path=/; HttpOnly',
+    ]);
+});
+
+test('debugbar masks sensitive query parameters and the request uri', function (): void {
+    $_SERVER['REQUEST_URI'] = '/reset?token=reset-secret&page=2';
+    $_GET = ['token' => 'reset-secret', 'page' => '2'];
+
+    $dataset = makeDebugbar()->collect();
+
+    expect($dataset['collectors']['request']['query'])->toBe(['token' => '[masked]', 'page' => '2'])
+        ->and($dataset['collectors']['request']['uri'])->toBe('/reset?token=[masked]&page=2')
+        ->and($dataset['summary']['uri'])->toBe('/reset?token=[masked]&page=2');
+});
+
+test('debugbar masks sensitive keys in message and log context', function (): void {
+    $debugbar = makeDebugbar();
+    $debugbar->addMessage('Login', 'info', ['user' => 'ada', 'password' => 'hunter2']);
+    $debugbar->recordLog('info', 'API call', ['headers' => ['Authorization' => 'Bearer abc']]);
+
+    $dataset = $debugbar->collect();
+
+    expect($dataset['collectors']['messages']['messages'][0]['context'])
+        ->toBe(['user' => 'ada', 'password' => '[masked]'])
+        ->and($dataset['collectors']['logs']['logs'][0]['context'])
+        ->toBe(['headers' => ['Authorization' => '[masked]']]);
+});
+
+test('debugbar does not inject or store for a client outside the allowlist', function (): void {
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+
+    $storage = null;
+    $debugbar = makeDebugbar([], $storage);
+    $html = '<html><body>Page</body></html>';
+
+    expect($debugbar->inject($html))->toBe($html)
+        ->and($storage?->get($debugbar->id()))->toBeNull();
+});
+
+test('debugbar does not inject when a same-host proxy forwards an external client', function (): void {
+    $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = '203.0.113.9';
+
+    $html = '<html><body>Page</body></html>';
+
+    expect(makeDebugbar()->inject($html))->toBe($html);
+});
+
+test('debugbar does not inject when REMOTE_ADDR is missing from an http request', function (): void {
+    unset($_SERVER['REMOTE_ADDR']);
+
+    $html = '<html><body>Page</body></html>';
+
+    expect(makeDebugbar()->inject($html))->toBe($html);
+});
+
+test('debugbar is disabled in production unless explicitly allowed', function (): void {
+    $production = new AppEnvironment(['APP_ENV' => 'production']);
+    $html = '<html><body>Page</body></html>';
+
+    $deniedConfig = new ConfigRepository(['debugbar' => ['enabled' => true, 'allow_production' => false]]);
+    $denied = new Debugbar($deniedConfig, access: new AccessGate($deniedConfig, $production));
+
+    $allowedConfig = new ConfigRepository(['debugbar' => ['enabled' => true, 'allow_production' => true]]);
+    $allowed = new Debugbar($allowedConfig, access: new AccessGate($allowedConfig, $production));
+
+    expect($denied->isEnabled())->toBeFalse()
+        ->and($denied->inject($html))->toBe($html)
+        ->and($allowed->isEnabled())->toBeTrue()
+        ->and($allowed->inject($html))->toContain('marko-debugbar');
+});
+
+test('profiler routes return 404 in production', function (): void {
+    $storage = null;
+    $debugbar = makeDebugbar([], $storage);
+    $debugbar->inject('<html><body>Page</body></html>');
+
+    $controller = makeProfilerController($debugbar->config(), $storage, 'production');
+
+    expect($controller->index(new Request())->statusCode())->toBe(404)
+        ->and($controller->json(new Request(), $debugbar->id())->statusCode())->toBe(404)
+        ->and($controller->clear(new Request())->statusCode())->toBe(404);
+});
+
+test('profiler routes return 404 when REMOTE_ADDR is missing', function (): void {
+    $storage = null;
+    $debugbar = makeDebugbar([], $storage);
+    $debugbar->inject('<html><body>Page</body></html>');
+
+    unset($_SERVER['REMOTE_ADDR']);
+
+    $controller = makeProfilerController($debugbar->config(), $storage);
+
+    expect($controller->index(new Request())->statusCode())->toBe(404)
+        ->and($controller->json(new Request(), $debugbar->id())->statusCode())->toBe(404);
+});
+
+test('profiler routes return 404 behind an untrusted same-host proxy', function (): void {
+    $storage = null;
+    $debugbar = makeDebugbar([], $storage);
+    $debugbar->inject('<html><body>Page</body></html>');
+
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = '203.0.113.9';
+
+    $controller = makeProfilerController($debugbar->config(), $storage);
+
+    expect($controller->index(new Request())->statusCode())->toBe(404)
+        ->and($controller->clear(new Request())->statusCode())->toBe(404);
 });

@@ -6,6 +6,7 @@ namespace Marko\Debugbar;
 
 use Closure;
 use Marko\Config\ConfigRepositoryInterface;
+use Marko\Debugbar\Access\AccessGate;
 use Marko\Debugbar\Collectors\CollectorInterface;
 use Marko\Debugbar\Collectors\ConfigCollector;
 use Marko\Debugbar\Collectors\DatabaseCollector;
@@ -24,6 +25,7 @@ use Marko\Debugbar\Data\QueryRecord;
 use Marko\Debugbar\Data\ViewRenderRecord;
 use Marko\Debugbar\Rendering\HtmlDebugbarRenderer;
 use Marko\Debugbar\Storage\DebugbarStorage;
+use Marko\Debugbar\Support\Redactor;
 use Throwable;
 
 class Debugbar
@@ -35,6 +37,8 @@ class Debugbar
     private readonly int $startMemory;
 
     private readonly string $id;
+
+    private readonly AccessGate $access;
 
     private bool $booted = false;
 
@@ -62,7 +66,9 @@ class Debugbar
         private readonly ConfigRepositoryInterface $config,
         private readonly ?DebugbarStorage $storage = null,
         private readonly HtmlDebugbarRenderer $renderer = new HtmlDebugbarRenderer(),
+        ?AccessGate $access = null,
     ) {
+        $this->access = $access ?? new AccessGate($config);
         $this->startTime = microtime(true);
         $this->startMemory = memory_get_usage(true);
         $this->id = bin2hex(random_bytes(8));
@@ -95,6 +101,10 @@ class Debugbar
             return;
         }
 
+        if (! $this->clientAllowed()) {
+            return;
+        }
+
         $this->capturing = true;
 
         if (function_exists('header_register_callback')) {
@@ -118,9 +128,27 @@ class Debugbar
         return $this->capturing;
     }
 
+    /**
+     * True when debugbar.enabled is on and the app is not in production (unless
+     * debugbar.allow_production explicitly permits it).
+     */
     public function isEnabled(): bool
     {
-        return $this->configBool('debugbar.enabled', false);
+        return $this->access->enabled();
+    }
+
+    /**
+     * True when the current HTTP client may see captured data: it passes the
+     * debugbar.route.allowed_ips allowlist and trusted-proxy rules. Requests
+     * without an HTTP context (CLI capture) have no client to expose data to.
+     */
+    public function clientAllowed(): bool
+    {
+        if (! isset($_SERVER['REQUEST_METHOD'])) {
+            return true;
+        }
+
+        return $this->access->clientAllowed($_SERVER);
     }
 
     public function id(): string
@@ -291,7 +319,7 @@ class Debugbar
 
     public function inject(string $html): string
     {
-        if (! $this->isEnabled()) {
+        if (! $this->isEnabled() || ! $this->clientAllowed()) {
             return $html;
         }
 
@@ -366,7 +394,7 @@ class Debugbar
                 'logs' => count($this->logs),
                 'views' => count($this->viewRenders),
                 'method' => $this->serverString('REQUEST_METHOD', 'CLI'),
-                'uri' => $this->serverString('REQUEST_URI', '/'),
+                'uri' => (new Redactor())->uri($this->serverString('REQUEST_URI', '/')),
             ],
             'collectors' => $collected,
         ];

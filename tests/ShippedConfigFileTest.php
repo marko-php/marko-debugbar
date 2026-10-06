@@ -5,7 +5,12 @@ declare(strict_types=1);
 use Marko\Config\Exceptions\ConfigException;
 
 const DEBUGBAR_CONFIG_FILE = __DIR__ . '/../config/debugbar.php';
-const DEBUGBAR_CONFIG_VARIABLES = ['DEBUGBAR_ENABLED', 'APP_DEBUG', 'DEBUGBAR_STORAGE_MAX_FILES'];
+const DEBUGBAR_CONFIG_VARIABLES = [
+    'DEBUGBAR_ENABLED',
+    'APP_DEBUG',
+    'DEBUGBAR_STORAGE_MAX_FILES',
+    'DEBUGBAR_ALLOW_PRODUCTION',
+];
 
 beforeEach(function (): void {
     $this->originalEnv = [];
@@ -60,4 +65,17 @@ it('rejects a DEBUGBAR_STORAGE_MAX_FILES that is not an integer', function (): v
 
     expect(fn (): array => require DEBUGBAR_CONFIG_FILE)
         ->toThrow(ConfigException::class, 'Environment variable "DEBUGBAR_STORAGE_MAX_FILES" must be an integer');
+});
+
+it('keeps production access off by default', function (): void {
+    $config = require DEBUGBAR_CONFIG_FILE;
+
+    expect($config['allow_production'])->toBeFalse()
+        ->and($config['route']['trusted_proxies'])->toBe([]);
+});
+
+it('reads DEBUGBAR_ALLOW_PRODUCTION for debugbar.allow_production', function (): void {
+    $_ENV['DEBUGBAR_ALLOW_PRODUCTION'] = 'true';
+
+    expect((require DEBUGBAR_CONFIG_FILE)['allow_production'])->toBeTrue();
 });

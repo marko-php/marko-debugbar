@@ -89,3 +89,22 @@ it('orders listed datasets by most-recent first', function (): void {
         ->and($items[0]['id'])->toBe($idB)
         ->and($items[1]['id'])->toBe($idA);
 });
+
+it('writes profiles readable by the owner only inside an owner-only directory', function (): void {
+    $previousUmask = umask(0002);
+
+    try {
+        $storage = makeStorage();
+        $id = str_pad('e', 12, 'e');
+        $storage->put(makeDataset($id));
+    } finally {
+        umask($previousUmask);
+    }
+
+    $directory = $storage->directory();
+    clearstatcache();
+
+    expect(fileperms($directory) & 0777)->toBe(0700)
+        ->and(fileperms($directory.'/'.$id.'.json') & 0777)->toBe(0600)
+        ->and(fileperms($directory.'/'.$id.'.summary.json') & 0777)->toBe(0600);
+});
